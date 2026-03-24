@@ -619,34 +619,79 @@ export default function App() {
     setLoading(true);
     setError(null);
     try {
-      // 1. Get Projections (doesn't require API key)
-      const projRes = await fetch('/api/projections');
+      const apiKey = process.env.ODDS_API_KEY;
+      if (!apiKey) {
+        throw new Error("ODDS_API_KEY is missing. Please add it to your Secrets.");
+      }
+
+      const baseUrl = 'https://api.the-odds-api.com/v4';
+
+      // 1. Get Projections (Using absolute URL to prevent 404/HTML parsing issues)
+      const projUrl = `${window.location.origin}/api/projections`;
+      const projRes = await fetch(projUrl);
+      
+      const projContentType = projRes.headers.get("content-type");
+      if (!projContentType || !projContentType.includes("application/json")) {
+        const textError = await projRes.text();
+        console.error("Expected JSON but received HTML/Text from projections:", textError);
+        throw new Error("Projections API did not return JSON.");
+      }
+      if (!projRes.ok) {
+        const errorData = await projRes.json();
+        throw new Error(`Projections API Error ${projRes.status}: ${errorData.message}`);
+      }
       const projData = await projRes.json();
       setProjections(projData);
 
       // 2. Get Events
-      const eventsRes = await fetch(`/api/events?sport=${selectedSport}`);
+      let activeSport = selectedSport;
+      if (selectedSport === "golf") {
+        const sportsUrl = `${baseUrl}/sports/?apiKey=${apiKey}`;
+        const sportsRes = await fetch(sportsUrl);
+        
+        // Bulletproof handling
+        const sportsContentType = sportsRes.headers.get("content-type");
+        if (!sportsContentType || !sportsContentType.includes("application/json")) {
+          const textError = await sportsRes.text();
+          console.error("Expected JSON but received HTML/Text:", textError);
+          throw new Error("API did not return JSON. Check the fetch URL and API key.");
+        }
+        if (!sportsRes.ok) {
+          const errorData = await sportsRes.json();
+          throw new Error(`API Error ${sportsRes.status}: ${errorData.message}`);
+        }
+        const sportsData = await sportsRes.json();
+        const activeGolf = sportsData.find((s: any) => s.key.startsWith("golf_") && s.active);
+        if (activeGolf) activeSport = activeGolf.key;
+        else activeSport = "golf_pga_championship"; // Fallback
+      }
+
+      const eventsUrl = `${baseUrl}/sports/${activeSport}/odds/?apiKey=${apiKey}&regions=us&markets=h2h,spreads,totals&oddsFormat=american`;
+      const eventsRes = await fetch(eventsUrl);
+
+      // Bulletproof handling
+      const eventsContentType = eventsRes.headers.get("content-type");
+      if (!eventsContentType || !eventsContentType.includes("application/json")) {
+        const textError = await eventsRes.text();
+        console.error("Expected JSON but received HTML/Text:", textError);
+        throw new Error("API did not return JSON. Check the fetch URL and API key.");
+      }
+      if (!eventsRes.ok) {
+        const errorData = await eventsRes.json();
+        throw new Error(`API Error ${eventsRes.status}: ${errorData.message}`);
+      }
       const eventsData = await eventsRes.json();
       
-      if (!eventsRes.ok) {
-        if (eventsRes.status === 401) {
-          throw new Error(eventsData.message || "API Key Invalid or Missing. Please check your Secrets.");
-        }
-        throw new Error(eventsData.error || "Failed to fetch events");
-      }
-      setEvents(eventsData.data || []);
-      
-      // If server returned a more specific sport key (like for Golf), use it for subsequent calls
-      const activeSportKey = eventsData.activeSport || selectedSport;
-
-      // 3. Get Odds for each event
-      const oddsPromises = (eventsData.data || []).slice(0, 10).map(async (event: Event) => {
-        const oddsRes = await fetch(`/api/odds?eventId=${event.id}&sport=${activeSportKey}`);
-        return oddsRes.json();
-      });
-
-      const oddsResults = await Promise.all(oddsPromises);
-      setAllOdds(oddsResults.map(r => r.data).filter(Boolean));
+      const events = eventsData.map((item: any) => ({
+        id: item.id,
+        sport_key: item.sport_key,
+        sport_title: item.sport_title,
+        commence_time: item.commence_time,
+        home_team: item.home_team,
+        away_team: item.away_team
+      }));
+      setEvents(events);
+      setAllOdds(eventsData);
     } catch (err: any) {
       console.error(err);
       setError(err.message || "An unexpected error occurred");
